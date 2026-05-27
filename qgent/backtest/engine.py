@@ -19,13 +19,16 @@ logger = logging.getLogger(__name__)
 
 
 class BacktestEngine:
-    """Main backtest engine supporting both vectorized and event-driven modes.
+    """Main backtest engine supporting vectorized and event-driven modes.
 
-    Usage:
-        engine = BacktestEngine(strategy=MyStrategy(), initial_cash=100000)
-        result = engine.run(df)
-        result.report()
-        result.plot()
+    Signal timing convention:
+      - generate_signals() produces a signal at each bar's close using that bar's data
+      - The signal takes effect at the SAME bar's close (= entry price)
+      - The position captures the return from that close to the next bar's close
+
+    Vectorized implements this as: positions = signals.shift(1), applied to
+    close-to-close returns. Event-driven matches by trading at the bar when
+    the signal is generated.
     """
 
     def __init__(
@@ -49,19 +52,8 @@ class BacktestEngine:
         )
 
     def run(self, df: pd.DataFrame, mode: str = "vectorized", symbol: str = "asset") -> BacktestResult:
-        """Run backtest on OHLCV data.
-
-        Args:
-            df: OHLCV DataFrame.
-            mode: 'vectorized' or 'event_driven'.
-            symbol: Symbol name for the asset.
-
-        Returns:
-            BacktestResult with metrics, equity curve, and trades.
-        """
         if df.empty:
             raise BacktestError("Cannot run backtest on empty DataFrame")
-
         if mode == "vectorized":
             return self._run_vectorized(df, symbol)
         elif mode == "event_driven":
@@ -69,10 +61,14 @@ class BacktestEngine:
         else:
             raise BacktestError(f"Unknown mode: {mode}. Use 'vectorized' or 'event_driven'")
 
+    # -----------------------------------------------------------------
+    # Vectorized
+    # -----------------------------------------------------------------
+
     def _run_vectorized(self, df: pd.DataFrame, symbol: str) -> BacktestResult:
-        """Fast vectorized backtest."""
         signals = self.strategy.generate_signals(df)
 
+        # signals[i] generated at close of bar i → position active during bar i+1
         positions = signals.shift(1).fillna(0)
         returns = df["close"].pct_change().fillna(0)
 
@@ -86,25 +82,124 @@ class BacktestEngine:
         n_trades = (position_changes != 0).sum()
 
         metrics = compute_metrics(
-            equity_curve,
-            risk_free_rate=0.0,
-            periods_per_year=self.periods_per_year,
+            equity_curve, risk_free_rate=0.0, periods_per_year=self.periods_per_year,
         )
         metrics.total_trades = int(n_trades)
 
         return BacktestResult(
-            metrics=metrics,
-            equity_curve=equity_curve,
-            returns=strategy_returns,
-            positions=positions,
-            signals=signals,
-            trades=self.broker.trades,
-            df=df,
-            strategy_name=self.strategy.name,
+            metrics=metrics, equity_curve=equity_curve, returns=strategy_returns,
+            positions=positions, signals=signals, trades=self.broker.trades,
+            df=df, strategy_name=self.strategy.name,
         )
 
+    # -----------------------------------------------------------------
+    # Event-driven
+    # -----------------------------------------------------------------
+
     def _run_event_driven(self, df: pd.DataFrame, symbol: str) -> BacktestResult:
-        """Event-driven backtest with order simulation."""
+        self.broker.reset()
+        has_generate = True
+        try:
+            signals = self.strategy.generate_signals(df)
+        except NotImplementedError:
+            has_generate = False
+
+        if has_generate:
+            return self._run_event_driven_from_signals(df, symbol, signals)
+        else:
+            return self._run_event_driven_on_bar(df, symbol)
+
+    def _max_buyable_units(self, price: float) -> float:
+        """Max units the broker can buy given current cash."""
+        sr = self.broker.config.slippage_rate
+        cr = self.broker.config.commission_rate
+        fill_price = price * (1 + sr)
+        return self.broker.cash / (fill_price * (1 + cr)) * 0.99999
+
+    def _run_event_driven_from_signals(
+        self, df: pd.DataFrame, symbol: str, signals: pd.Series
+    ) -> BacktestResult:
+        """Event-driven execution matching vectorized timing.
+
+        Trade at bar i's close when signals[i] differs from signals[i-1].
+        The position then captures the return from close[i] to close[i+1],
+        matching vectorized positions[i+1] * returns[i+1].
+        """
+        self.broker.reset()
+
+        equity_values = []
+        position_values = []
+        prev_signal = 0.0
+
+        for i in range(len(df)):
+            current_price = df["close"].iloc[i]
+            timestamp = df.index[i]
+            sig = signals.iloc[i]
+
+            if pd.isna(sig):
+                sig = prev_signal
+
+            # Trade at this bar's close when signal changes
+            if sig != prev_signal:
+                current_qty = self.broker.get_position(symbol)
+
+                if sig == 0:
+                    if current_qty > 0:
+                        self.broker.submit_order(
+                            symbol, OrderSide.SELL, current_qty, current_price, timestamp)
+                    elif current_qty < 0:
+                        self.broker.submit_order(
+                            symbol, OrderSide.BUY, abs(current_qty), current_price, timestamp)
+
+                elif sig > 0:
+                    if current_qty < 0:
+                        self.broker.submit_order(
+                            symbol, OrderSide.BUY, abs(current_qty), current_price, timestamp)
+                    elif current_qty > 0:
+                        self.broker.submit_order(
+                            symbol, OrderSide.SELL, current_qty, current_price, timestamp)
+                    units = self._max_buyable_units(current_price) * abs(sig)
+                    if units > 0:
+                        self.broker.submit_order(
+                            symbol, OrderSide.BUY, units, current_price, timestamp)
+
+                elif sig < 0:
+                    if current_qty > 0:
+                        self.broker.submit_order(
+                            symbol, OrderSide.SELL, current_qty, current_price, timestamp)
+                    elif current_qty < 0:
+                        self.broker.submit_order(
+                            symbol, OrderSide.BUY, abs(current_qty), current_price, timestamp)
+                    units = self._max_buyable_units(current_price) * abs(sig)
+                    if units > 0:
+                        self.broker.submit_order(
+                            symbol, OrderSide.SELL, units, current_price, timestamp)
+
+                prev_signal = sig
+
+            equity_values.append(self.broker.mark_to_market({symbol: current_price}))
+            position_values.append(self.broker.get_position(symbol))
+
+        equity_curve = pd.Series(equity_values, index=df.index, name="equity")
+        strategy_returns = equity_curve.pct_change().fillna(0)
+        positions_series = pd.Series(position_values, index=df.index, name="position")
+
+        metrics = compute_metrics(
+            equity_curve, trades=self.broker.trades,
+            risk_free_rate=0.0, periods_per_year=self.periods_per_year,
+        )
+
+        return BacktestResult(
+            metrics=metrics, equity_curve=equity_curve, returns=strategy_returns,
+            positions=positions_series, signals=signals, trades=self.broker.trades,
+            df=df, strategy_name=self.strategy.name,
+        )
+
+    # -----------------------------------------------------------------
+    # Event-driven from on_bar()
+    # -----------------------------------------------------------------
+
+    def _run_event_driven_on_bar(self, df: pd.DataFrame, symbol: str) -> BacktestResult:
         self.broker.reset()
         if self.risk_manager:
             self.risk_manager.reset()
@@ -124,22 +219,16 @@ class BacktestEngine:
             if self.risk_manager and self.broker.get_position(symbol) != 0:
                 pos_qty = self.broker.get_position(symbol)
                 entry_price = self.broker.avg_prices.get(symbol, current_price)
-                if pos_qty > 0:
-                    pnl_pct = (current_price - entry_price) / entry_price
-                else:
-                    pnl_pct = (entry_price - current_price) / entry_price
-
+                pnl_pct = (current_price - entry_price) / entry_price if pos_qty > 0 \
+                    else (entry_price - current_price) / entry_price
                 equity = self.broker.mark_to_market({symbol: current_price})
                 peak = max(equity_values) if equity_values else self.initial_cash
-                dd = (equity - peak) / peak if peak > 0 else 0
-
-                if self.risk_manager.should_close(pnl_pct, {"drawdown": abs(dd)}):
-                    close_qty = abs(pos_qty)
+                dd = abs((equity - peak) / peak) if peak > 0 else 0
+                if self.risk_manager.should_close(pnl_pct, {"drawdown": dd}):
                     side = OrderSide.SELL if pos_qty > 0 else OrderSide.BUY
-                    self.broker.submit_order(symbol, side, close_qty, current_price, timestamp)
+                    self.broker.submit_order(symbol, side, abs(pos_qty), current_price, timestamp)
                     signal_values.append(0)
-                    pos = self.broker.get_position(symbol)
-                    position_values.append(pos)
+                    position_values.append(self.broker.get_position(symbol))
                     equity_values.append(self.broker.mark_to_market({symbol: current_price}))
                     continue
 
@@ -153,37 +242,23 @@ class BacktestEngine:
                 if direction > 0 and current_pos <= 0:
                     if current_pos < 0:
                         self.broker.submit_order(
-                            symbol, OrderSide.BUY, abs(current_pos), current_price, timestamp
-                        )
+                            symbol, OrderSide.BUY, abs(current_pos), current_price, timestamp)
                     portfolio_val = self.broker.mark_to_market({symbol: current_price})
                     units = self.sizer.size(direction, current_price, portfolio_val)
                     if abs(units) > 0:
                         self.broker.submit_order(
-                            symbol, OrderSide.BUY, abs(units), current_price, timestamp
-                        )
-
-                elif direction < 0 and current_pos >= 0:
-                    if current_pos > 0:
-                        self.broker.submit_order(
-                            symbol, OrderSide.SELL, abs(current_pos), current_price, timestamp
-                        )
-                    portfolio_val = self.broker.mark_to_market({symbol: current_price})
-                    units = self.sizer.size(direction, current_price, portfolio_val)
-                    if abs(units) > 0:
-                        self.broker.submit_order(
-                            symbol, OrderSide.SELL, abs(units), current_price, timestamp
-                        )
-
+                            symbol, OrderSide.BUY, abs(units), current_price, timestamp)
+                elif direction < 0 and current_pos > 0:
+                    self.broker.submit_order(
+                        symbol, OrderSide.SELL, abs(current_pos), current_price, timestamp)
                 elif direction == 0 and current_pos != 0:
                     side = OrderSide.SELL if current_pos > 0 else OrderSide.BUY
                     self.broker.submit_order(
-                        symbol, side, abs(current_pos), current_price, timestamp
-                    )
+                        symbol, side, abs(current_pos), current_price, timestamp)
             else:
                 signal_values.append(0)
 
-            pos = self.broker.get_position(symbol)
-            position_values.append(pos)
+            position_values.append(self.broker.get_position(symbol))
             equity_values.append(self.broker.mark_to_market({symbol: current_price}))
 
         self.strategy.on_end(df)
@@ -194,19 +269,12 @@ class BacktestEngine:
         positions_series = pd.Series(position_values, index=df.index, name="position")
 
         metrics = compute_metrics(
-            equity_curve,
-            trades=self.broker.trades,
-            risk_free_rate=0.0,
-            periods_per_year=self.periods_per_year,
+            equity_curve, trades=self.broker.trades,
+            risk_free_rate=0.0, periods_per_year=self.periods_per_year,
         )
 
         return BacktestResult(
-            metrics=metrics,
-            equity_curve=equity_curve,
-            returns=strategy_returns,
-            positions=positions_series,
-            signals=signals_series,
-            trades=self.broker.trades,
-            df=df,
-            strategy_name=self.strategy.name,
+            metrics=metrics, equity_curve=equity_curve, returns=strategy_returns,
+            positions=positions_series, signals=signals_series, trades=self.broker.trades,
+            df=df, strategy_name=self.strategy.name,
         )
