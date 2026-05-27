@@ -175,7 +175,10 @@ print(f"持仓占比:     {holding_bars / len(signals):.1%}")
 avg_hold = holding_bars / max(entries.sum(), 1)
 print(f"平均持仓时长: {avg_hold:.0f} bars (~{avg_hold * 0.5:.0f} 小时)")
 
-# 逐笔交易分析
+# ============================================================
+# 5. 逐笔交易记录 → 导出 CSV
+# ============================================================
+
 entry_idx = signals.index[entries]
 exit_idx = signals.index[exits]
 n_trades = min(len(entry_idx), len(exit_idx))
@@ -187,9 +190,14 @@ if n_trades > 0:
         xp = df_clean.loc[exit_idx[i], "close"]
         ret = (xp - ep) / ep
         dur = (exit_idx[i] - entry_idx[i]).total_seconds() / 3600
-        trades.append({"entry_time": entry_idx[i], "exit_time": exit_idx[i],
-                        "entry_price": ep, "exit_price": xp,
-                        "return": ret, "hours": dur})
+        trades.append({
+            "entry_time": entry_idx[i],
+            "exit_time": exit_idx[i],
+            "entry_price": ep,
+            "exit_price": xp,
+            "return": ret,
+            "hours": dur,
+        })
     tdf = pd.DataFrame(trades)
     wins = tdf[tdf["return"] > 0]
     losses = tdf[tdf["return"] <= 0]
@@ -199,9 +207,31 @@ if n_trades > 0:
     print(f"亏损笔数:     {len(losses)}")
     print(f"胜率:         {len(wins)/n_trades:.1%}")
     print(f"平均收益:     {tdf['return'].mean():.2%}")
-    print(f"平均盈利:     {wins['return'].mean():.2%}" if len(wins) > 0 else "")
-    print(f"平均亏损:     {losses['return'].mean():.2%}" if len(losses) > 0 else "")
-    print(f"盈亏比:       {abs(wins['return'].mean() / losses['return'].mean()):.2f}" if len(losses) > 0 and len(wins) > 0 else "")
+    if len(wins) > 0:
+        print(f"平均盈利:     {wins['return'].mean():.2%}")
+    if len(losses) > 0:
+        print(f"平均亏损:     {losses['return'].mean():.2%}")
+    if len(wins) > 0 and len(losses) > 0:
+        print(f"盈亏比:       {abs(wins['return'].mean() / losses['return'].mean()):.2f}")
     print(f"最大单笔盈利: {tdf['return'].max():.2%}")
     print(f"最大单笔亏损: {tdf['return'].min():.2%}")
     print(f"平均持仓:     {tdf['hours'].mean():.0f} 小时")
+
+    # 导出 CSV
+    export = pd.DataFrame()
+    export["买入时间"] = tdf["entry_time"].dt.strftime("%Y-%m-%d %H:%M")
+    export["卖出时间"] = tdf["exit_time"].dt.strftime("%Y-%m-%d %H:%M")
+    export["买入价"] = tdf["entry_price"].round(2)
+    export["卖出价"] = tdf["exit_price"].round(2)
+    export["收益率%"] = (tdf["return"] * 100).round(3)
+    export["持仓小时"] = tdf["hours"].round(1)
+    export["累计收益%"] = ((1 + tdf["return"]).cumprod() * 100 - 100).round(2)
+    export.index = range(1, len(export) + 1)
+    export.index.name = "序号"
+
+    out_path = "examples/rsimakd_trades.csv"
+    export.to_csv(out_path, encoding="utf-8-sig")
+    print(f"\n交易记录已导出: {out_path} ({len(export)} 笔)")
+
+    print("\n最近 20 笔交易:")
+    print(export.tail(20).to_string())
