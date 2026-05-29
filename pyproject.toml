@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qgent"
+version = "0.1.0"
+description = "Quantitative research framework for crypto and US stocks"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+    "ccxt>=4.0",
+    "yfinance>=0.2",
+    "plotly>=5.18",
+    "scipy>=1.11",
+    "streamlit>=1.30",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.1",
+]
+
+[tool.setuptools.packages.find]
+include = ["qgent*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
