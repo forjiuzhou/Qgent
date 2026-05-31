@@ -6,4 +6,7 @@ dist/
 build/
 .pytest_cache/
 data/
+.cache/
+.venv/
+venv/
 .ruff_cache/

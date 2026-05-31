@@ -9,6 +9,7 @@ Quantitative research framework for crypto and US stocks.
 - **Strategy Framework** — Base class supporting both vectorized and event-driven strategies
 - **Backtest Engine** — Vectorized (fast) and event-driven (realistic) modes with commission/slippage simulation
 - **Portfolio Optimization** — Mean-variance, max Sharpe, min variance, risk parity, equal weight
+- **Fundamental Health Check** — Decision funnel that separates "discounted good company" from "falling knife"; tailored cyclical vs. normal analysis paths (see [docs/buy_scanner.md](docs/buy_scanner.md))
 - **Visualization** — Interactive Plotly charts and Streamlit dashboard
 
 ## Installation
@@ -61,6 +62,7 @@ qgent/
 ├── strategy/       # Strategy base, signals, position sizing, risk management
 ├── backtest/       # Engine, simulated broker, metrics, report
 ├── portfolio/      # Optimization (MVO, risk parity, etc.), allocation
+├── fundamental/    # Fundamental fetcher + health-check decision funnel
 ├── viz/            # Plotly charts, Streamlit dashboard
 └── config.py       # Global configuration
 ```
@@ -81,6 +83,8 @@ See `examples/` directory:
 - `01_quick_start.py` — Vectorized momentum strategy
 - `02_event_driven.py` — Event-driven backtest with risk management
 - `03_portfolio_optimization.py` — Multi-asset portfolio optimization
+- `10_rsi_bias_signal.py` — Pine RSI strategy port (buy-long / sell-flat), backtest
+- `11_us_buy_scanner.py` — S&P 500 oversold buy-point scanner + 3-layer analysis ([docs](docs/buy_scanner.md))
 
 ## License
 
