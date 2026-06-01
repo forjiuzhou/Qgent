@@ -22,7 +22,7 @@ CACHE_TTL_DAYS = 7  # financials update slowly; reuse cache within a week
 
 # info fields we care about (valuation, profitability, growth, safety, classification)
 _INFO_FIELDS = [
-    "sector", "industry", "marketCap", "averageVolume",
+    "sector", "industry", "longBusinessSummary", "marketCap", "averageVolume",
     "trailingPE", "priceToBook", "enterpriseToEbitda",
     "profitMargins", "grossMargins", "operatingMargins", "returnOnEquity",
     "revenueGrowth", "earningsGrowth",

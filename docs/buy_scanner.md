@@ -95,11 +95,21 @@ qgent/fundamental/
 ├── fetcher.py     # fetch_fundamentals / fetch_many：yfinance info + 财报，JSON 缓存
 └── health.py      # health_report / is_cyclical：决策漏斗（两路径 + 否决 + 打分）
 
-examples/
-├── 10_rsi_bias_signal.py   # Pine 策略原样回测（买入开多/卖出清仓），证伪卖出信号
-└── 11_us_buy_scanner.py    # 买点扫描器 + 三层分析（主入口）
+qgent/research/    # 第1层定性归因的 Agentic 升级（见 docs/deep_research.md）
+├── financials.py  # fetch_deep_financials：多期三表 + 分析师/估值 digest（数据采集，可自动化）
+├── news.py        # fetch_recent_news：yfinance 近期新闻结构化
+├── llm.py         # LLMClient：OpenAI 兼容客户端（环境变量配置，requests）
+└── analyst.py     # analyze_qualitative：组prompt→调模型→标签文本解析（非JSON）
 
-tests/test_fundamental.py   # 9 个测试：两路径 + 否决 + 缺失数据
+examples/
+├── 10_rsi_bias_signal.py      # Pine 策略原样回测（买入开多/卖出清仓），证伪卖出信号
+├── 11_us_buy_scanner.py       # 买点扫描器 + 三层分析（主入口）
+├── 12_buy_scanner_detail.py   # 候选逐只详细量化报告（终端）
+├── 13_buy_scanner_report.py   # 接大模型的单次定性报告（每只 md）
+└── 14_deep_research_data.py   # 深度研究数据采集层（喂 Agent 的三表 digest）
+
+reports/                       # 深度研究产物：<代码>_deep.md + _SUMMARY.md
+tests/test_fundamental.py      # 9 个测试：两路径 + 否决 + 缺失数据
 ```
 
 ---
